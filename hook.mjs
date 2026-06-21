@@ -121,15 +121,65 @@ async function runHook(deps) {
 function boundText(text, maxChars) {
   return text.length <= maxChars ? text : text.slice(text.length - maxChars);
 }
+var NOISE = [
+  /^base directory for this skill/i,
+  /^caveat:/i,
+  /^\[request interrupted/i,
+  /^<[a-z!/]/i,
+  // <command-message>, <system-reminder>, <local-command-...>
+  /^the user (opened|selected)/i,
+  /^this session is being continued/i,
+  /^\s*$/
+];
+function meaningfulMessages(jsonl) {
+  const out = [];
+  for (const line of jsonl.replace(/^﻿/, "").split("\n")) {
+    if (!line.trim()) continue;
+    let obj;
+    try {
+      obj = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const role = obj?.message?.role ?? obj?.type;
+    if (role !== "user" && role !== "assistant") continue;
+    const content = obj?.message?.content;
+    let text = "";
+    if (typeof content === "string") text = content;
+    else if (Array.isArray(content)) {
+      text = content.filter((b) => b?.type === "text" && typeof b.text === "string").map((b) => b.text).join(" ");
+    }
+    text = text.replace(/\s+/g, " ").trim();
+    if (text.length < 12) continue;
+    if (NOISE.some((re) => re.test(text))) continue;
+    out.push(`${role}: ${text.slice(0, 600)}`);
+  }
+  return out;
+}
+function digestSession(jsonl, head = 6, tail = 4) {
+  const msgs = meaningfulMessages(jsonl);
+  if (msgs.length <= head + tail) return msgs.join("\n");
+  return [...msgs.slice(0, head), "\u2026", ...msgs.slice(-tail)].join("\n");
+}
 function buildProfilePrompt(historyText) {
   return [
-    "You are building a developer profile from this person's recent coding",
-    "history. Summarize who they are as a developer for ad targeting: their",
-    "stack, languages, frameworks, domains, and the kinds of tools they'd find",
-    "useful. Output ONLY a compact JSON object with keys like",
-    `"summary", "languages", "frameworks", "domains", "tools_of_interest". No prose.`,
+    "You are building a rich profile of a developer from several of their recent",
+    "coding sessions. Look across the sessions and infer not just their tech, but",
+    "WHAT THEY ARE TRYING TO BUILD AND ACHIEVE. Ignore skill/tool boilerplate.",
     "",
-    "HISTORY:",
+    "Output ONLY a compact JSON object with these keys:",
+    '  "summary": 2-3 sentences on who they are and what they are working toward,',
+    '  "role": their apparent role/seniority,',
+    '  "building": array of { "project", "what", "goal" } \u2014 things they are creating,',
+    '  "goals": array of what they are trying to achieve,',
+    '  "domains": array (e.g. "AI agents", "dev tooling", "fintech"),',
+    '  "languages": array, "frameworks": array, "platforms": array,',
+    '  "recurring_needs": array of problems they keep hitting,',
+    '  "tools_of_interest": array of product categories they would find useful,',
+    '  "stage": e.g. "prototyping" | "scaling" | "maintaining".',
+    "No prose outside the JSON.",
+    "",
+    "SESSIONS:",
     historyText
   ].join("\n");
 }
@@ -169,7 +219,8 @@ function runClaude(prompt) {
   });
 }
 var PROJECTS_DIR = process.env.AOC_PROJECTS_DIR ?? join2(homedir(), ".claude", "projects");
-var PROFILE_BUDGET = 12e3;
+var PROFILE_BUDGET = 3e4;
+var PROFILE_SESSIONS = 8;
 function readRecentHistory(projectsDir) {
   if (!existsSync2(projectsDir)) return "";
   const files = [];
@@ -185,13 +236,18 @@ function readRecentHistory(projectsDir) {
       if (!f.endsWith(".jsonl")) continue;
       const p = join2(projPath, f);
       try {
-        files.push({ path: p, mtime: statSync(p).mtimeMs });
+        files.push({ path: p, project: proj, mtime: statSync(p).mtimeMs });
       } catch {
       }
     }
   }
   files.sort((a, b) => b.mtime - a.mtime);
-  const parts = files.slice(0, 3).map((f) => extractRecentText(readFileSync2(f.path, "utf8"), 40));
+  const parts = files.slice(0, PROFILE_SESSIONS).map((f) => {
+    const label = f.project.replace(/^C--Users-[^-]+-/, "");
+    return `
+=== session: ${label} ===
+${digestSession(readFileSync2(f.path, "utf8"))}`;
+  });
   return boundText(parts.join("\n"), PROFILE_BUDGET);
 }
 async function maybeBuildProfile(device) {
