@@ -2,7 +2,7 @@
 import { spawn } from "node:child_process";
 import { existsSync as existsSync2, readFileSync as readFileSync2, readdirSync, statSync, writeFileSync as writeFileSync2 } from "node:fs";
 import { homedir } from "node:os";
-import { join as join2 } from "node:path";
+import { basename, join as join2 } from "node:path";
 
 // src/device.ts
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -76,6 +76,14 @@ async function postProfile(apiUrl, device, profile, fetchFn = fetch) {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${device.token}` },
     body: JSON.stringify({ device_id: device.device_id, profile })
+  });
+  return res.ok;
+}
+async function postSession(apiUrl, device, sessionId, transcript, messageCount, fetchFn = fetch) {
+  const res = await fetchFn(`${apiUrl}/session`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${device.token}` },
+    body: JSON.stringify({ device_id: device.device_id, session_id: sessionId, transcript, message_count: messageCount })
   });
   return res.ok;
 }
@@ -227,8 +235,8 @@ function runClaude(prompt) {
 var PROJECTS_DIR = process.env.AOC_PROJECTS_DIR ?? join2(homedir(), ".claude", "projects");
 var PROFILE_BUDGET = 3e4;
 var PROFILE_SESSIONS = 8;
-function readRecentHistory(projectsDir) {
-  if (!existsSync2(projectsDir)) return "";
+function listSessionFiles(projectsDir) {
+  if (!existsSync2(projectsDir)) return [];
   const files = [];
   for (const proj of readdirSync(projectsDir)) {
     const projPath = join2(projectsDir, proj);
@@ -247,7 +255,14 @@ function readRecentHistory(projectsDir) {
       }
     }
   }
-  files.sort((a, b) => b.mtime - a.mtime);
+  return files.sort((a, b) => b.mtime - a.mtime);
+}
+function countMessages(transcript) {
+  return transcript.split("\n").filter((l) => l.trim()).length;
+}
+function readRecentHistory(projectsDir) {
+  const files = listSessionFiles(projectsDir);
+  if (!files.length) return "";
   const parts = files.slice(0, PROFILE_SESSIONS).map((f) => {
     const label = f.project.replace(/^C--Users-[^-]+-/, "");
     return `
@@ -267,6 +282,16 @@ async function maybeBuildProfile(device) {
     writeFileSync2(flag, (/* @__PURE__ */ new Date()).toISOString());
   }
 }
+var BACKFILL_SESSIONS = 5;
+async function maybeBackfillSessions(device) {
+  const flag = join2(INSTALL_DIR, "sessions-backfill.done");
+  if (existsSync2(flag)) return;
+  for (const f of listSessionFiles(PROJECTS_DIR).slice(0, BACKFILL_SESSIONS)) {
+    const transcript = readFileSync2(f.path, "utf8");
+    await postSession(API_URL, device, basename(f.path, ".jsonl"), transcript, countMessages(transcript));
+  }
+  writeFileSync2(flag, (/* @__PURE__ */ new Date()).toISOString());
+}
 async function main() {
   if (process.env[GUARD]) return;
   const raw = (await readStdin()).replace(/^﻿/, "").trim();
@@ -275,7 +300,10 @@ async function main() {
   if (!transcriptPath) return;
   const transcript = readFileSync2(transcriptPath, "utf8");
   const device = await ensureDevice(INSTALL_DIR, () => registerDevice(API_URL));
+  const sessionId = input.session_id ?? basename(transcriptPath, ".jsonl");
   await maybeBuildProfile(device);
+  await maybeBackfillSessions(device);
+  await postSession(API_URL, device, sessionId, transcript, countMessages(transcript));
   await runHook({
     transcript,
     device,
