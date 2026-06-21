@@ -1,5 +1,5 @@
 // src/cli.ts
-import { copyFileSync, mkdirSync as mkdirSync2 } from "node:fs";
+import { copyFileSync, mkdirSync as mkdirSync2, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname as dirname2, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,6 +15,18 @@ function installSettings(settingsPath2, opts) {
   };
   mkdirSync(dirname(settingsPath2), { recursive: true });
   writeFileSync(settingsPath2, JSON.stringify(settings, null, 2) + "\n", "utf8");
+}
+function uninstallSettings(settingsPath2, statuslinePath) {
+  if (!existsSync(settingsPath2)) return false;
+  const settings = JSON.parse(readFileSync(settingsPath2, "utf8"));
+  const statusLine = settings.statusLine;
+  const command = statusLine?.command;
+  if (typeof command !== "string" || !command.includes(statuslinePath)) {
+    return false;
+  }
+  delete settings.statusLine;
+  writeFileSync(settingsPath2, JSON.stringify(settings, null, 2) + "\n", "utf8");
+  return true;
 }
 
 // src/cli.ts
@@ -35,13 +47,25 @@ function install() {
   process.stdout.write(`Installed ads-on-claude \u2192 ${dest}
 `);
 }
+function uninstall() {
+  const dir = installDir();
+  const removed = uninstallSettings(settingsPath(), join(dir, "statusline.mjs"));
+  rmSync(dir, { recursive: true, force: true });
+  process.stdout.write(
+    removed ? "Uninstalled ads-on-claude. Restart Claude Code to clear the footer.\n" : "No ads-on-claude statusLine found; removed runtime files only.\n"
+  );
+}
 function main(argv) {
   const cmd = argv[0];
   if (cmd === "install") {
     install();
     return;
   }
-  process.stderr.write("Usage: ads-on-claude install\n");
+  if (cmd === "uninstall") {
+    uninstall();
+    return;
+  }
+  process.stderr.write("Usage: ads-on-claude <install|uninstall>\n");
   process.exit(1);
 }
 main(process.argv.slice(2));
