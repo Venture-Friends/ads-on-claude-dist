@@ -7,26 +7,42 @@ import { fileURLToPath } from "node:url";
 // src/install.ts
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-function installSettings(settingsPath2, opts) {
-  const settings = existsSync(settingsPath2) ? JSON.parse(readFileSync(settingsPath2, "utf8")) : {};
-  settings.statusLine = {
-    type: "command",
-    command: opts.statusLineCommand
-  };
+function load(settingsPath2) {
+  return existsSync(settingsPath2) ? JSON.parse(readFileSync(settingsPath2, "utf8")) : {};
+}
+function save(settingsPath2, settings) {
   mkdirSync(dirname(settingsPath2), { recursive: true });
   writeFileSync(settingsPath2, JSON.stringify(settings, null, 2) + "\n", "utf8");
 }
-function uninstallSettings(settingsPath2, statuslinePath) {
+function installSettings(settingsPath2, opts) {
+  const settings = load(settingsPath2);
+  settings.statusLine = { type: "command", command: opts.statusLineCommand };
+  settings.hooks ??= {};
+  const stop = settings.hooks.Stop ??= [];
+  const deduped = stop.filter((g) => !g.hooks?.some((h) => h.command === opts.hookCommand));
+  deduped.push({ hooks: [{ type: "command", command: opts.hookCommand }] });
+  settings.hooks.Stop = deduped;
+  save(settingsPath2, settings);
+}
+function uninstallSettings(settingsPath2, marker) {
   if (!existsSync(settingsPath2)) return false;
-  const settings = JSON.parse(readFileSync(settingsPath2, "utf8"));
-  const statusLine = settings.statusLine;
-  const command = statusLine?.command;
-  if (typeof command !== "string" || !command.includes(statuslinePath)) {
-    return false;
+  const settings = load(settingsPath2);
+  let removed = false;
+  const sl = settings.statusLine;
+  if (typeof sl?.command === "string" && sl.command.includes(marker)) {
+    delete settings.statusLine;
+    removed = true;
   }
-  delete settings.statusLine;
-  writeFileSync(settingsPath2, JSON.stringify(settings, null, 2) + "\n", "utf8");
-  return true;
+  const stop = settings.hooks?.Stop;
+  if (Array.isArray(stop)) {
+    const kept = stop.filter((g) => !g.hooks?.some((h) => typeof h.command === "string" && h.command.includes(marker)));
+    if (kept.length !== stop.length) {
+      settings.hooks.Stop = kept;
+      removed = true;
+    }
+  }
+  if (removed) save(settingsPath2, settings);
+  return removed;
 }
 
 // src/cli.ts
@@ -40,16 +56,20 @@ function install() {
   const dir = installDir();
   mkdirSync2(dir, { recursive: true });
   const selfDir = dirname2(fileURLToPath(import.meta.url));
-  const dest = join(dir, "statusline.mjs");
-  copyFileSync(join(selfDir, "statusline.mjs"), dest);
-  const command = `"${process.execPath}" "${dest}"`;
-  installSettings(settingsPath(), { statusLineCommand: command });
-  process.stdout.write(`Installed ads-on-claude \u2192 ${dest}
+  const statusline = join(dir, "statusline.mjs");
+  const hook = join(dir, "hook.mjs");
+  copyFileSync(join(selfDir, "statusline.mjs"), statusline);
+  copyFileSync(join(selfDir, "hook.mjs"), hook);
+  installSettings(settingsPath(), {
+    statusLineCommand: `"${process.execPath}" "${statusline}"`,
+    hookCommand: `"${process.execPath}" "${hook}"`
+  });
+  process.stdout.write(`Installed ads-on-claude \u2192 ${dir}
 `);
 }
 function uninstall() {
   const dir = installDir();
-  const removed = uninstallSettings(settingsPath(), join(dir, "statusline.mjs"));
+  const removed = uninstallSettings(settingsPath(), dir);
   rmSync(dir, { recursive: true, force: true });
   process.stdout.write(
     removed ? "Uninstalled ads-on-claude. Restart Claude Code to clear the footer.\n" : "No ads-on-claude statusLine found; removed runtime files only.\n"

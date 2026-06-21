@@ -15,7 +15,7 @@ if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
 
 Write-Host "Downloading ads-on-claude..."
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-foreach ($f in @("aoc.mjs", "statusline.mjs")) {
+foreach ($f in @("aoc.mjs", "statusline.mjs", "hook.mjs")) {
   Invoke-WebRequest -Uri "$BaseUrl/$f" -OutFile (Join-Path $InstallDir $f)
 }
 

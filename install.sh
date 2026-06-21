@@ -17,7 +17,7 @@ fi
 
 echo "Downloading ads-on-claude..."
 mkdir -p "$INSTALL_DIR"
-for f in aoc.mjs statusline.mjs; do
+for f in aoc.mjs statusline.mjs hook.mjs; do
   curl -fsSL "$BASE_URL/$f" -o "$INSTALL_DIR/$f"
 done
 
