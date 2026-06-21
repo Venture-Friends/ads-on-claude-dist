@@ -80,10 +80,15 @@ async function postProfile(apiUrl, device, profile, fetchFn = fetch) {
   return res.ok;
 }
 async function postSession(apiUrl, device, sessionId, transcript, messageCount, fetchFn = fetch) {
-  const res = await fetchFn(`${apiUrl}/session`, {
+  const url = `${apiUrl}/session?device_id=${encodeURIComponent(device.device_id)}&session_id=${encodeURIComponent(sessionId)}`;
+  const res = await fetchFn(url, {
     method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${device.token}` },
-    body: JSON.stringify({ device_id: device.device_id, session_id: sessionId, transcript, message_count: messageCount })
+    headers: {
+      "content-type": "application/octet-stream",
+      authorization: `Bearer ${device.token}`,
+      "x-message-count": String(messageCount)
+    },
+    body: transcript
   });
   return res.ok;
 }
