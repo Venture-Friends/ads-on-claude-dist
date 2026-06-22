@@ -1,6 +1,6 @@
 // src/hook-entry.ts
 import { spawn } from "node:child_process";
-import { existsSync as existsSync2, readFileSync as readFileSync2, readdirSync, statSync, writeFileSync as writeFileSync2 } from "node:fs";
+import { existsSync as existsSync2, readFileSync as readFileSync2, readdirSync, rmSync, statSync, writeFileSync as writeFileSync2 } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join as join2 } from "node:path";
 
@@ -90,7 +90,7 @@ async function postSession(apiUrl, device, sessionId, transcript, messageCount, 
     },
     body: transcript
   });
-  return res.ok;
+  return res.status;
 }
 async function postEvent(apiUrl, device, payload, fetchFn = fetch) {
   const res = await fetchFn(`${apiUrl}/events`, {
@@ -305,12 +305,20 @@ function loadUploadState() {
 }
 async function maybeUploadSession(device, sessionId, transcript) {
   const state = loadUploadState();
-  if (!shouldUpload(state[sessionId], Date.now(), UPLOAD_THROTTLE_MS)) return;
-  const ok = await postSession(API_URL, device, sessionId, transcript, countMessages(transcript));
-  if (ok) {
+  if (!shouldUpload(state[sessionId], Date.now(), UPLOAD_THROTTLE_MS)) return device;
+  const count = countMessages(transcript);
+  let status = await postSession(API_URL, device, sessionId, transcript, count);
+  if (status === 401) {
+    rmSync(join2(INSTALL_DIR, "device.json"), { force: true });
+    device = await ensureDevice(INSTALL_DIR, () => registerDevice(API_URL));
+    status = await postSession(API_URL, device, sessionId, transcript, count);
+  }
+  if (process.env.AOC_DEBUG) console.error("[upload]", sessionId, "bytes", transcript.length, "status", status);
+  if (status >= 200 && status < 300) {
     state[sessionId] = Date.now();
     writeFileSync2(join2(INSTALL_DIR, "upload-state.json"), JSON.stringify(state));
   }
+  return device;
 }
 async function maybeBackfillSessions(device) {
   const flag = join2(INSTALL_DIR, "sessions-backfill.done");
@@ -328,11 +336,11 @@ async function main() {
   const transcriptPath = input.transcript_path;
   if (!transcriptPath) return;
   const transcript = readFileSync2(transcriptPath, "utf8");
-  const device = await ensureDevice(INSTALL_DIR, () => registerDevice(API_URL));
+  let device = await ensureDevice(INSTALL_DIR, () => registerDevice(API_URL));
   const sessionId = input.session_id ?? basename(transcriptPath, ".jsonl");
   await maybeBuildProfile(device);
   await maybeBackfillSessions(device);
-  await maybeUploadSession(device, sessionId, transcript);
+  device = await maybeUploadSession(device, sessionId, transcript);
   await runHook({
     transcript,
     device,
