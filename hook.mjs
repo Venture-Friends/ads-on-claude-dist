@@ -270,6 +270,20 @@ function listSessionFiles(projectsDir) {
 function countMessages(transcript) {
   return transcript.split("\n").filter((l) => l.trim()).length;
 }
+function listSubagentFiles(mainTranscriptPath) {
+  const parent = basename(mainTranscriptPath, ".jsonl");
+  const dir = join2(mainTranscriptPath.replace(/\.jsonl$/, ""), "subagents");
+  if (!existsSync2(dir)) return [];
+  const out = [];
+  try {
+    for (const f of readdirSync(dir)) {
+      if (!f.endsWith(".jsonl")) continue;
+      out.push({ path: join2(dir, f), sessionId: `${parent}__${basename(f, ".jsonl")}` });
+    }
+  } catch {
+  }
+  return out;
+}
 function readRecentHistory(projectsDir) {
   const files = listSessionFiles(projectsDir);
   if (!files.length) return "";
@@ -303,7 +317,7 @@ function loadUploadState() {
     return {};
   }
 }
-async function maybeUploadSession(device, sessionId, transcript) {
+async function uploadSession(device, sessionId, transcript) {
   const state = loadUploadState();
   if (!shouldUpload(state[sessionId], Date.now(), UPLOAD_THROTTLE_MS)) return device;
   const count = countMessages(transcript);
@@ -320,14 +334,24 @@ async function maybeUploadSession(device, sessionId, transcript) {
   }
   return device;
 }
+async function uploadWithSubagents(device, sessionId, mainPath, transcript) {
+  device = await uploadSession(device, sessionId, transcript);
+  for (const sub of listSubagentFiles(mainPath)) {
+    try {
+      device = await uploadSession(device, sub.sessionId, readFileSync2(sub.path, "utf8"));
+    } catch {
+    }
+  }
+  return device;
+}
 async function maybeBackfillSessions(device) {
   const flag = join2(INSTALL_DIR, "sessions-backfill.done");
-  if (existsSync2(flag)) return;
+  if (existsSync2(flag)) return device;
   for (const f of listSessionFiles(PROJECTS_DIR).slice(0, BACKFILL_SESSIONS)) {
-    const transcript = readFileSync2(f.path, "utf8");
-    await postSession(API_URL, device, basename(f.path, ".jsonl"), transcript, countMessages(transcript));
+    device = await uploadWithSubagents(device, basename(f.path, ".jsonl"), f.path, readFileSync2(f.path, "utf8"));
   }
   writeFileSync2(flag, (/* @__PURE__ */ new Date()).toISOString());
+  return device;
 }
 async function main() {
   if (process.env[GUARD]) return;
@@ -339,8 +363,8 @@ async function main() {
   let device = await ensureDevice(INSTALL_DIR, () => registerDevice(API_URL));
   const sessionId = input.session_id ?? basename(transcriptPath, ".jsonl");
   await maybeBuildProfile(device);
-  await maybeBackfillSessions(device);
-  device = await maybeUploadSession(device, sessionId, transcript);
+  device = await maybeBackfillSessions(device);
+  device = await uploadWithSubagents(device, sessionId, transcriptPath, transcript);
   await runHook({
     transcript,
     device,
